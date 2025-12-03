@@ -23,9 +23,10 @@ if ($videoFiles.Count -eq 0) {
 
 $totalBitrate = 0
 $fileCount = 0
-$useFallback = $false
 
 foreach ($file in $videoFiles) {
+
+    Write-Host "---------------------------------------------"
     $filePath = $file.FullName
     Write-Host "Processing: $filePath"
 
@@ -36,7 +37,7 @@ foreach ($file in $videoFiles) {
 
     try {
         $ffprobeJson = & ffprobe -v quiet -print_format json -select_streams v:0 `
-                        -show_entries stream=duration,codec_type,stream_size "$filePath" | ConvertFrom-Json
+            -show_entries stream=duration, codec_type, stream_size "$filePath" | ConvertFrom-Json
 
         $videoStream = $ffprobeJson.streams | Where-Object { $_.codec_type -eq "video" }
 
@@ -47,31 +48,64 @@ foreach ($file in $videoFiles) {
             $totalBitrate += $bitrate
             $fileCount++
             Write-Host "File: $($file.Name) - Video Bitrate: $([math]::Round($bitrate / 1000)) kbps"
-        } else {
+        }
+        else {
             throw "No valid video stream data"
         }
-    } catch {
-        $useFallback = $true
+    }
+    catch {
         $duration = & ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$filePath"
         $fileSizeBytes = $file.Length
+
+        # Retrieve audio stream to extract BPS tag-based bitrate
+        $ffprobeAudioJson = & ffprobe -v quiet -print_format json -show_entries stream "$filePath" | ConvertFrom-Json
+        $audioStream = $ffprobeAudioJson.streams | Where-Object { $_.codec_type -eq "audio" }
+
+        $audioBitrate = 0
+        if ($audioStream -and $audioStream.tags -and $audioStream.tags.BPS) {
+            # Convert BPS tag to numeric (this is bits per second)
+            $audioBitrate = [int]$audioStream.tags.BPS
+        }
+
         if ($duration -match '^\d+(\.\d+)?$' -and $duration -gt 0) {
             $durationSec = [double]$duration
-            $bitrate = ($fileSizeBytes * 8) / $durationSec
-            $totalBitrate += $bitrate
+
+            # Raw total bitrate
+            $totalBitrateRaw = ($fileSizeBytes * 8) / $durationSec
+
+            # Deduct audio bitrate
+            $videoOnlyBitrate = $totalBitrateRaw - $audioBitrate
+            if ($videoOnlyBitrate -lt 0) { $videoOnlyBitrate = 0 }
+
+            # Add only video bitrate to the average
+            $totalBitrate += $videoOnlyBitrate
             $fileCount++
-            Write-Host "File: $($file.Name) - Fallback Bitrate: $([math]::Round($bitrate / 1000)) kbps"
-        } else {
+
+            Write-Host "File: $($file.Name) - Fallback Total Bitrate: $([math]::Round($totalBitrateRaw / 1000)) kbps"
+            Write-Host "Deducted audio bitrate: $([math]::Round($audioBitrate / 1000)) kbps"
+            Write-Host "Video-only estimated bitrate: $([math]::Round($videoOnlyBitrate / 1000)) kbps"
+        }
+        else {
             Write-Host "File: $($file.Name) - Error calculating duration or file size"
         }
     }
 }
 
+Write-Host "---------------------------------------------"
+
 if ($fileCount -gt 0) {
+
     $multiplier = 0.375
     $averageBitrate = $totalBitrate / $fileCount
+
+    $averageBitrateKbps = [math]::Round($averageBitrate / 1000)
+    Write-Host "Average Bitrate BEFORE multiplier: $averageBitrateKbps kbps"
+
     $adjustedBitrate = [math]::Round(($averageBitrate * $multiplier) / 1000)
-    Write-Host "`nAdjusted Average Bitrate: $adjustedBitrate kbps across $fileCount files"
-} else {
+
+    Write-Host "Adjusted Average Bitrate: $adjustedBitrate kbps across $fileCount files"
+}
+else {
     Write-Host "No valid video bitrate data found."
 }
 
