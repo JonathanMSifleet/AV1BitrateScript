@@ -61,10 +61,22 @@ foreach ($file in $videoFiles) {
         $ffprobeAudioJson = & ffprobe -v quiet -print_format json -show_entries stream "$filePath" | ConvertFrom-Json
         $audioStream = $ffprobeAudioJson.streams | Where-Object { $_.codec_type -eq "audio" }
 
+        # Retrieve audio bitrate safely
         $audioBitrate = 0
         if ($audioStream -and $audioStream.tags -and $audioStream.tags.BPS) {
-            # Convert BPS tag to numeric (this is bits per second)
-            $audioBitrate = [int]$audioStream.tags.BPS
+
+            # BPS may be a single value or an array
+            $bpsValue = $audioStream.tags.BPS
+
+            if ($bpsValue -is [System.Array]) {
+                # Take the first entry
+                $bpsValue = $bpsValue[0]
+            }
+
+            # Convert to int safely
+            if ($bpsValue -match '^\d+$') {
+                $audioBitrate = [int]$bpsValue
+            }
         }
 
         if ($duration -match '^\d+(\.\d+)?$' -and $duration -gt 0) {
